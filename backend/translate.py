@@ -6,9 +6,11 @@ from PIL import Image
 import cv2
 import easyocr
 import numpy as np
-import requests
-import json  
+import aiohttp
+import asyncio
+import json
 from dotenv import load_dotenv
+
 load_dotenv()
 
 os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -23,21 +25,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-LANGUAGE_MAPPING = { "English": {"easyocr": "en", "helsinki": "en", "facebook": "en_XX"},
-                    "French": {"easyocr": "fr", "helsinki": "fr", "facebook": "fr_XX"},
-                    "Spanish": {"easyocr": "es", "helsinki": "es", "facebook": "es_XX"},
-                    "Arabic": {"easyocr": "ar", "helsinki": "ar", "facebook": "ar_AR"},
-                    "German": {"easyocr": "de", "helsinki": "de", "facebook": "de_DE"},
-                    "Chinese": {"easyocr": "ch_sim", "helsinki": "zh", "facebook": "zh_CN"},
-                    "Russian": {"easyocr": "ru", "helsinki": "ru", "facebook": "ru_RU"}, 
-                    "Italian": {"easyocr": "it", "helsinki": "it", "facebook": "it_IT"}, 
-                    "Portuguese": {"easyocr": "pt", "helsinki": "pt", "facebook": "pt_XX"}, 
-                    "Japanese": {"easyocr": "ja", "helsinki": "ja", "facebook": "ja_XX"},}
+LANGUAGE_MAPPING = { 
+    "English": {"easyocr": "en", "helsinki": "en", "facebook": "en_XX"},
+    "French": {"easyocr": "fr", "helsinki": "fr", "facebook": "fr_XX"},
+    "Spanish": {"easyocr": "es", "helsinki": "es", "facebook": "es_XX"},
+    "Arabic": {"easyocr": "ar", "helsinki": "ar", "facebook": "ar_AR"},
+    "German": {"easyocr": "de", "helsinki": "de", "facebook": "de_DE"},
+    "Chinese": {"easyocr": "ch_sim", "helsinki": "zh", "facebook": "zh_CN"},
+    "Russian": {"easyocr": "ru", "helsinki": "ru", "facebook": "ru_RU"}, 
+    "Italian": {"easyocr": "it", "helsinki": "it", "facebook": "it_IT"}, 
+    "Portuguese": {"easyocr": "pt", "helsinki": "pt", "facebook": "pt_XX"}, 
+    "Japanese": {"easyocr": "ja", "helsinki": "ja", "facebook": "ja_XX"}
+}
 
-#HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/google-t5/t5-base"
 HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/facebook/mbart-large-50-many-to-many-mmt"
+HUGGINGFACE_API_TOKEN = os.getenv("Hugging_API_KEY")
 
-HUGGINGFACE_API_TOKEN =  os.getenv("Hugging_API_KEY")
 
 def extract_text_from_image(image_path, language_code):
     """Extract text from an image using EasyOCR."""
@@ -60,6 +63,7 @@ def extract_text_from_image(image_path, language_code):
         logger.error(f"Error during OCR: {e}")
         raise
 
+
 def clean_extracted_text(text):
     """Clean extracted text by removing unnecessary characters."""
     try:
@@ -71,101 +75,59 @@ def clean_extracted_text(text):
         logger.error(f"Error during text cleaning: {e}")
         raise
 
-def query(payload):
-    """Query the Hugging Face API."""
+
+async def query(payload):
+    """Query the Hugging Face API asynchronously."""
     try:
         headers = {
             "Authorization": f"Bearer {HUGGINGFACE_API_TOKEN}",
             "Content-Type": "application/json"
         }
-        data = json.dumps(payload)
-        response = requests.post(HUGGINGFACE_API_URL, headers=headers, data=data)
-        response.raise_for_status() 
-        return json.loads(response.content.decode("utf-8"))
+        async with aiohttp.ClientSession() as session:
+            async with session.post(HUGGINGFACE_API_URL, headers=headers, json=payload) as response:
+                response.raise_for_status()
+                return await response.json()
     except Exception as e:
         logger.error(f"Error during translation API request: {e}")
         raise
 
-def translate_text(text, source_language, target_language):
-    """Translate text using the Hugging Face API with full language names."""
-    
+
+async def translate_text(text, source_language, target_language):
+    """Translate text using the Hugging Face API with full language names asynchronously."""
     try:
         logger.info(f"Translating text from {source_language} to {target_language} using Hugging Face API.")
         normalized_text = " ".join(text.split()).strip()
-        if source_language == "ar_AR":
-            target_language = target_language[:-3]
-            source_language = source_language[:-3]
-            HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models"
-            logger.info(f"Translating text from {source_language} to {target_language} using Hugging Face API.")
-            model_name = f"Helsinki-NLP/opus-mt-{source_language}-{target_language}"
-            headers = {"Authorization": f"Bearer {HUGGINGFACE_API_TOKEN}"}
-            payload = {"inputs": text}
-            response = requests.post(f"{HUGGINGFACE_API_URL}/{model_name}", headers=headers, json=payload)
-            response.raise_for_status()
-            result = response.json()
-            translated_text = result[0]["translation_text"]
-            return translated_text
-        if target_language!="en_XX":
-            payload = {
+        payload = {
             "inputs": normalized_text.lower(),
             "parameters": {
                 "src_lang": source_language,
-                "tgt_lang": "en_XX"
-            },
-            }
-            
-            logger.debug(f"Payload being sent to API: {payload}")
-
-            response = query(payload)
-        
-            logger.debug(f"API response: {response}")
-            logger.info(f"translate {source_language} to {target_language}: {text.lower()}")
-        
-            if isinstance(response, list) and len(response) > 0:
-                translated_text = response[0].get("translation_text", "")
-                payload = {
-            "inputs": translated_text.lower(),
-            "parameters": {
-                "src_lang": "en_XX",
                 "tgt_lang": target_language
-            },
+            }
         }
-                response = query(payload)
-                logger.debug(f"API response: {response}")
-                translated_text = response[0].get("translation_text", "")
-                if not translated_text:
-                    logger.warning("Translation not found in response.")
-                    logger.info(f"Translated text: {translated_text}")
-                return translated_text
-            else:
-                logger.error("Invalid response format or empty response received.")
-        else:
-            payload = {
-            "inputs": normalized_text.lower(),
-            "parameters": {
-                "src_lang": source_language,
-                "tgt_lang": "en_XX"
-            },
-            } 
-            logger.debug(f"Payload being sent to API: {payload}")
-            response = query(payload)
-        
-            logger.debug(f"API response: {response}")
-            logger.info(f"translate {source_language} to {target_language}: {text.lower()}")
 
+        logger.debug(f"Payload being sent to API: {payload}")
+        response = await query(payload)
+
+        logger.debug(f"API response: {response}")
+        if isinstance(response, list) and len(response) > 0:
             translated_text = response[0].get("translation_text", "")
-            return translated_text   
-        return None
+            if not translated_text:
+                logger.warning("Translation not found in response.")
+            return translated_text
+        else:
+            logger.error("Invalid response format or empty response received.")
     except Exception as e:
         logger.error(f"Translation error: {e}")
         raise
 
-def main(image_path, source_language, target_language):
-    """Main workflow for text extraction and translation."""
+
+async def main(image_path, source_language, target_language):
+    """Main workflow for text extraction and translation asynchronously."""
     try:
         if source_language.capitalize() not in LANGUAGE_MAPPING or target_language.capitalize() not in LANGUAGE_MAPPING:
             logger.error("Unsupported language provided.")
             return None
+        
         source_lang_code = LANGUAGE_MAPPING[source_language.capitalize()]["easyocr"]
         source_helsinki_code = LANGUAGE_MAPPING[source_language.capitalize()]["facebook"]
         target_helsinki_code = LANGUAGE_MAPPING[target_language.capitalize()]["facebook"]
@@ -178,7 +140,7 @@ def main(image_path, source_language, target_language):
         cleaned_text = clean_extracted_text(extracted_text)
         logger.info(f"Cleaned text: {cleaned_text}")
         
-        translated_text = translate_text(cleaned_text, source_helsinki_code, target_helsinki_code)
+        translated_text = await translate_text(cleaned_text, source_helsinki_code, target_helsinki_code)
         logger.info(f"Translated text: {translated_text}")
         
         result = {
@@ -191,6 +153,7 @@ def main(image_path, source_language, target_language):
         logger.error(f"Error in main workflow: {e}")
         return None
 
+
 if __name__ == "__main__":
     if len(sys.argv) != 4:
         print("Usage: python translate.py <image_path> <source_language> <target_language>")
@@ -199,6 +162,4 @@ if __name__ == "__main__":
     image_path = sys.argv[1]
     source_language = sys.argv[2]
     target_language = sys.argv[3]
-    result = main(image_path, source_language, target_language)
-    if not result:
-        sys.exit(1)
+    asyncio.run(main(image_path, source_language, target_language))
